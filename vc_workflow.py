@@ -14,7 +14,7 @@ from toil.job import Job
 from toil_lib import require, UserError
 from toil_lib import partitions
 from utils.output import consolidate_tuple_output
-from variation import variation_construct
+from variation import variation_construct, joint_calling
 
 
 def construct_job(job, func, inputs, *args):
@@ -30,11 +30,15 @@ def construct_job(job, func, inputs, *args):
     num_partitions = 100
     partition_size = len(inputs)/num_partitions
     if partition_size > 1:
+        # For larger sample number (100), we only process the first 100 samples for joint calling! 
         for partition in partitions(inputs, partition_size):
             return job.addChildJobFn(construct_job, func, partition, *args).rv()
     else:
-        for sample in inputs:
-            return job.addChildJobFn(func, sample, *args).rv()
+        total_gvcf = [None] * len(inputs)
+        for i in range(len(inputs)):
+            total_gvcf[i] = job.addChildJobFn(func, inputs[i], *args).rv()
+    total_vars_out = job.addFollowOnJobFn(joint_calling, config, upstream_output=total_gvcf, errMarker='30901').rv()
+    return job.addFollowOnJobFn(consolidate_tuple_output, config, upstream_output=total_vars_out, errMarker='30902').rv()
 
 def run_variation(job, sample, config):
     config = argparse.Namespace(**vars(config))
@@ -42,8 +46,7 @@ def run_variation(job, sample, config):
     disk = 2 * os.path.getsize(config.bam)
     job.fileStore.logToMaster('********** -------------- ************* Variation Calling Module for sample: {}'.format(config.uuid))
     ### Now, we would construct the whole workflow to complete the analysis.
-    analysis_out = job.addChildJobFn(variation_construct, config, cores=2, disk=disk).rv()
-    return job.addFollowOnJobFn(consolidate_tuple_output, config, upstream_output=analysis_out, errMarker='30901').rv()
+    return job.addChildJobFn(variation_construct, config, cores=2, disk=disk).rv()    
 
 def bamfile_check(inputFileList,checkidname="StoreId",bampath=None, baipath=None):
     for flag_file in inputFileList:
